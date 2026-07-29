@@ -1,8 +1,8 @@
 # Command Injection Vulnerability in ZHOME ZH-A0101 set_online_client via `ip`
 ## Overview
 
-- **Vendor:** ZHOME
-- **Product:** ZH-A0101
+- **Vendor:** Ziroom
+- **Product:** ZHOME-A0101
 - **Firmware Version:** 1.0.1.0, Build 202004151405
 - **Platform:** OpenWrt / MediaTek MT7621, MIPS32
 - **Vulnerability Type:** Command Injection
